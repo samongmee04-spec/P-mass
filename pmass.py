@@ -325,7 +325,7 @@ def upload(yt, path: Path, title: str, description: str, recorded: datetime | No
     body = {
         "snippet": {"title": title, "description": description[:5000], "categoryId": "29",
                     "defaultLanguage": "th", "defaultAudioLanguage": "th"},
-        "status": {"privacyStatus": YT_PRIVACY, "selfDeclaredMadeForKids": False},
+        "status": {"privacyStatus": YT_PRIVACY, "selfDeclaredMadeForKids": True},
     }
     if recorded:
         body["recordingDetails"] = {"recordingDate": recorded.astimezone(timezone.utc).isoformat()}
