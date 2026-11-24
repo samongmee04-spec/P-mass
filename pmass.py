@@ -63,22 +63,37 @@ def save_state(state: dict) -> None:
 
 # ----------------------------------------------------------------------------- email
 
-def send_email(subject: str, body: str) -> None:
-    sender = os.environ.get("GMAIL_ADDRESS")
-    password = os.environ.get("GMAIL_APP_PASSWORD")
-    to = os.environ.get("NOTIFY_TO") or sender
+def send_email(subject: str, body: str) -> bool:
+    """Send a notification. Never raises: a mail problem must not undo an upload."""
+    sender = re.sub(r"\s", "", os.environ.get("GMAIL_ADDRESS", ""))
+    password = re.sub(r"\s", "", os.environ.get("GMAIL_APP_PASSWORD", ""))  # app passwords are shown with spaces
+    to = re.sub(r"\s", "", os.environ.get("NOTIFY_TO", "")) or sender
     if not (sender and password):
         log("EMAIL (not configured):", subject, "\n", body)
-        return
+        return False
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = f"P mass <{sender}>"
     msg["To"] = to
     msg.set_content(body)
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ssl.create_default_context()) as s:
-        s.login(sender, password.replace(" ", ""))
-        s.send_message(msg)
-    log("Email sent:", subject)
+    errors = []
+    for port in (465, 587):
+        try:
+            if port == 465:
+                s = smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ssl.create_default_context(), timeout=30)
+            else:
+                s = smtplib.SMTP("smtp.gmail.com", 587, timeout=30)
+                s.starttls(context=ssl.create_default_context())
+            with s:
+                s.login(sender, password)
+                s.send_message(msg)
+            log("Email sent:", subject)
+            return True
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"port {port}: {type(e).__name__}: {e}")
+    log("EMAIL FAILED (check GMAIL_ADDRESS / GMAIL_APP_PASSWORD secrets):", " | ".join(errors))
+    log("Unsent email:", subject, "\n", body)
+    return False
 
 
 def run_link() -> str:
@@ -291,6 +306,8 @@ def process(vid: str, url: str, state: dict, cookies: str | None, manual: bool, 
 
     rec.update(status="done", youtube_id=yt_id, title=t.title,
                uploaded_at=datetime.now(THAI_TZ).isoformat(timespec="minutes"))
+    save_state(state)
+    log(f"UPLOADED: https://studio.youtube.com/video/{yt_id}/edit")
     send_email(
         f"[P mass] โพสต์แล้ว: {t.title}",
         f"อัปโหลดมิสซาขึ้นช่อง \"{channel}\" เรียบร้อย ✅ ({YT_PRIVACY})\n\n"
@@ -350,6 +367,9 @@ def main() -> int:
             process(vid, url, state, cookies, manual, args.dry_run)
         except Exception as e:  # noqa: BLE001
             traceback.print_exc()
+            if rec.get("status") == "done":
+                save_state(state)
+                continue
             rec["attempts"] = rec.get("attempts", 0) + 1
             rec["status"] = "error" if rec["attempts"] < MAX_ATTEMPTS else "failed"
             rec["last_error"] = str(e)[:300]

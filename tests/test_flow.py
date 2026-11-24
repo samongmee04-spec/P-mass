@@ -81,3 +81,29 @@ def test_blocked_facebook_alerts_once_per_day(monkeypatch, tmp_path):
     pmass.main()
     pmass.main()
     assert len(emails) == 1 and "Facebook" in emails[0][0]
+
+
+def test_email_failure_does_not_undo_upload(monkeypatch, tmp_path):
+    ids = ["111111111"]
+    infos = {"111111111": info("111111111"), "222222222": info("222222222")}
+    emails, uploads, _ = setup(monkeypatch, tmp_path, ids, infos)
+    pmass.main()
+    monkeypatch.setattr(pmass, "send_email", lambda s, b: (_ for _ in ()).throw(OSError("smtp down")))
+    ids.insert(0, "222222222")
+    pmass.main()
+    assert len(uploads) == 1
+    assert pmass.load_state()["videos"]["222222222"]["status"] == "done"
+    pmass.main()
+    assert len(uploads) == 1  # not uploaded twice
+
+
+def test_send_email_never_raises(monkeypatch):
+    monkeypatch.setenv("GMAIL_ADDRESS", "a@example.com")
+    monkeypatch.setenv("GMAIL_APP_PASSWORD", "abcd efgh ijkl mnop")
+
+    def boom(*a, **k):
+        raise OSError("blocked")
+
+    monkeypatch.setattr(pmass.smtplib, "SMTP_SSL", boom)
+    monkeypatch.setattr(pmass.smtplib, "SMTP", boom)
+    assert pmass.send_email("s", "b") is False
