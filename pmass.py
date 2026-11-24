@@ -13,7 +13,9 @@ Settings come from environment variables (GitHub Secrets) - see README.md.
 from __future__ import annotations
 
 import argparse
+import email as _email
 import html
+import imaplib
 import json
 import os
 import re
@@ -26,7 +28,9 @@ import time
 import traceback
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from email.header import decode_header, make_header
 from email.message import EmailMessage
+from email.utils import parseaddr
 from http.cookiejar import MozillaCookieJar
 from pathlib import Path
 
@@ -188,6 +192,76 @@ def discover_video_ids(cookies: str | None) -> list[str]:
 
 def video_url(vid_or_url: str) -> str:
     return vid_or_url if vid_or_url.startswith("http") else f"https://www.facebook.com/watch/?v={vid_or_url}"
+
+
+# ----------------------------------------------------------------------------- mailbox
+# The owner can e-mail a Facebook video link to their own Gmail (Facebook app: Share -> Gmail).
+# Each run reads recent mail from the owner to the owner and handles those links.
+
+FB_LINK_RE = re.compile(r"https?://(?:[a-z0-9-]+\.)?(?:facebook\.com|fb\.watch)/[^\s<>\"'\)\]]+", re.I)
+VIDEO_HINTS = ("/videos/", "/watch", "/reel/", "/share/v/", "/share/r/", "/live/", "fb.watch/")
+
+
+def video_links_in(text: str) -> list[str]:
+    text = html.unescape(text or "").replace("\\/", "/")
+    out: list[str] = []
+    for m in FB_LINK_RE.findall(text):
+        link = m.rstrip(".,;:!?")
+        if any(h in link for h in VIDEO_HINTS) and link not in out:
+            out.append(link)
+    return out
+
+
+def message_links(msg) -> list[str]:
+    """Facebook video links in one e-mail. Mail sent by P mass itself is ignored."""
+    subject = str(make_header(decode_header(msg.get("Subject", ""))))
+    name, _addr = parseaddr(msg.get("From", ""))
+    if subject.startswith("[P mass]") or name.strip() == "P mass":
+        return []
+    texts = [subject]
+    for part in msg.walk():
+        if part.get_content_type() in ("text/plain", "text/html"):
+            payload = part.get_payload(decode=True) or b""
+            texts.append(payload.decode(part.get_content_charset() or "utf-8", errors="replace"))
+    return video_links_in("\n".join(texts))
+
+
+def inbox_links(days: int = 3) -> tuple[list[str], str]:
+    """Return (links, problem). Never raises."""
+    sender = re.sub(r"\s", "", os.environ.get("GMAIL_ADDRESS", ""))
+    password = re.sub(r"\s", "", os.environ.get("GMAIL_APP_PASSWORD", ""))
+    if not (sender and password):
+        return [], "GMAIL_ADDRESS / GMAIL_APP_PASSWORD not set"
+    links: list[str] = []
+    try:
+        with imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=30) as box:
+            box.login(sender, password)
+            box.select("INBOX", readonly=True)
+            typ, data = box.search(None, "X-GM-RAW", f'"from:{sender} newer_than:{days}d"')
+            nums = data[0].split() if typ == "OK" and data and data[0] else []
+            for num in nums[-30:]:
+                typ, parts = box.fetch(num, "(BODY.PEEK[])")
+                if typ != "OK" or not parts or not isinstance(parts[0], tuple):
+                    continue
+                for link in message_links(_email.message_from_bytes(parts[0][1])):
+                    if link not in links:
+                        links.append(link)
+    except Exception as e:  # noqa: BLE001
+        return links, f"{type(e).__name__}: {e}"
+    return links, ""
+
+
+def inbox_targets(state: dict) -> tuple[list[tuple[str, str, bool]], int, str]:
+    """Links from the owner's mailbox that still need handling: (targets, links_found, problem)."""
+    links, problem = inbox_links()
+    targets = []
+    for url in links:
+        m = re.search(r"(\d{9,20})", url)
+        vid = m.group(1) if m else url
+        if state["videos"].get(vid, {}).get("status", "new") in ("new", "waiting", "error"):
+            targets.append((vid, url, True))
+    log(f"Mailbox: {len(links)} Facebook video link(s), {len(targets)} to handle" + (f" (problem: {problem})" if problem else ""))
+    return targets, len(links), problem
 
 
 def ydl_opts(cookies: str | None, **extra) -> dict:
@@ -365,32 +439,35 @@ def main() -> int:
         m = re.search(r"(\d{9,20})", url)
         targets = [(m.group(1) if m else url, url, True)]
     else:
+        targets, n_links, mail_problem = inbox_targets(state)
         ids = discover_video_ids(cookies)
-        if not ids:
-            log("Facebook returned no videos (blocked or login required)")
-            if state.get("last_alert_day") != today:
-                state["last_alert_day"] = today
-                send_email("[P mass] ⚠️ เปิดหน้า Facebook ของคุณพ่อไม่ได้",
-                           "วันนี้โปรแกรมหาวิดีโอในหน้า Facebook ไม่เจอ อาจโดน Facebook บล็อกหรือบังคับล็อกอิน\n"
-                           "ถ้ามีไลฟ์มิสซา กรุณาลงเองครั้งนี้ หรือกด Run workflow พร้อมใส่ลิงก์ไลฟ์ (ดู README)\n"
-                           "ถ้าเกิดซ้ำหลายวัน ให้เพิ่ม FB_COOKIES (ดู README)\n\n"
-                           f"รายละเอียด: {run_link()}\n(จะแจ้งเตือนเรื่องนี้ไม่เกินวันละครั้ง)")
-            save_state(state)
-            return 0
         if args.dry_run:
-            send_email("[P mass] ทดสอบ: ตรวจหน้า Facebook สำเร็จ ✅",
-                       f"เปิดหน้า Facebook ของคุณพ่อได้ พบวิดีโอ {len(ids)} รายการ\n"
-                       f"ล่าสุด: {video_url(ids[0])}\n\nระบบตรวจอัตโนมัติตามเวลามิสซาพร้อมใช้งาน")
-        if not state.get("initialized"):
+            send_email("[P mass] ทดสอบ: ระบบส่งอีเมลได้ ✅",
+                       "ทดสอบระบบ P mass\n"
+                       f"- ส่งอีเมล: ได้ (คุณได้รับเมลฉบับนี้แล้ว)\n"
+                       f"- อ่านกล่องจดหมาย: {'ไม่ได้ - ' + mail_problem if mail_problem else 'ได้'}; "
+                       f"พบลิงก์วิดีโอ Facebook ที่ส่งหาตัวเอง {n_links} ลิงก์ (รอลงคลิป {len(targets)})\n"
+                       f"- เปิดหน้า Facebook ของคุณพ่อ: {'ได้ พบวิดีโอ ' + str(len(ids)) + ' รายการ' if ids else 'ไม่ได้ (Facebook บล็อก ใช้ลิงก์ที่ส่งเมลหาตัวเองแทน)'}\n\n"
+                       f"รายละเอียด: {run_link()}")
+            return 0
+        if mail_problem and state.get("last_alert_day") != today:
+            state["last_alert_day"] = today
+            send_email("[P mass] ⚠️ อ่านกล่องจดหมายไม่ได้",
+                       f"ระบบอ่านอีเมลที่คุณส่งลิงก์ไลฟ์หาตัวเองไม่ได้: {mail_problem}\n"
+                       "ตรวจว่าใน Gmail เปิด IMAP แล้ว (Settings → Forwarding and POP/IMAP) และรหัสผ่านแอป GMAIL_APP_PASSWORD ถูกต้อง\n\n"
+                       f"รายละเอียด: {run_link()}\n(จะแจ้งเรื่องนี้ไม่เกินวันละครั้ง)")
+        if not ids:
+            log("Facebook page not readable from here (blocked or login required); using mailbox links only")
+        elif not state.get("initialized"):
             # First successful run: remember existing videos so old Masses are not re-uploaded.
             for vid in ids:
                 state["videos"].setdefault(vid, {"status": "existing_at_setup", "attempts": 0})
             state["initialized"] = True
-            save_state(state)
             log(f"First run: remembered {len(ids)} existing videos; new lives will be uploaded from now on")
-            return 0
-        targets = [(v, video_url(v), False) for v in ids
-                   if state["videos"].get(v, {}).get("status", "new") in ("new", "waiting", "error")]
+        else:
+            targets += [(v, video_url(v), False) for v in ids
+                        if state["videos"].get(v, {}).get("status", "new") in ("new", "waiting", "error")]
+        save_state(state)
         log(f"{len(targets)} video(s) to check")
 
     for vid, url, manual in targets:
