@@ -1,5 +1,10 @@
 {
  "initialized": false,
  "last_alert_day": "",
- "videos": {}
+ "videos": {
+  "https://www.facebook.com/share/v/1MR86d7oVj/": {
+   "attempts": 0,
+   "status": "new"
+  }
+ }
 }
