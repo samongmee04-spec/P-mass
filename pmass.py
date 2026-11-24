@@ -244,7 +244,8 @@ def process(vid: str, url: str, state: dict, cookies: str | None, manual: bool, 
     live_status = info.get("live_status")
     log(f"Video {vid}: live_status={live_status} started={started} duration={info.get('duration')}")
 
-    if live_status in ("is_live", "is_upcoming", "post_live"):
+    # Facebook does not always report live_status, so also treat "live" flag / no length as not finished.
+    if live_status in ("is_live", "is_upcoming", "post_live") or info.get("is_live") or not info.get("duration"):
         log("Still live / replay not ready yet - will try again next run")
         rec["status"] = "waiting"
         return
@@ -327,6 +328,10 @@ def main() -> int:
                            f"รายละเอียด: {run_link()}\n(จะแจ้งเตือนเรื่องนี้ไม่เกินวันละครั้ง)")
             save_state(state)
             return 0
+        if args.dry_run:
+            send_email("[P mass] ทดสอบ: ตรวจหน้า Facebook สำเร็จ ✅",
+                       f"เปิดหน้า Facebook ของคุณพ่อได้ พบวิดีโอ {len(ids)} รายการ\n"
+                       f"ล่าสุด: {video_url(ids[0])}\n\nระบบตรวจอัตโนมัติตามเวลามิสซาพร้อมใช้งาน")
         if not state.get("initialized"):
             # First successful run: remember existing videos so old Masses are not re-uploaded.
             for vid in ids:
