@@ -92,6 +92,10 @@ def send_email(subject: str, body: str) -> bool:
         except Exception as e:  # noqa: BLE001
             errors.append(f"port {port}: {type(e).__name__}: {e}")
     log("EMAIL FAILED (check GMAIL_ADDRESS / GMAIL_APP_PASSWORD secrets):", " | ".join(errors))
+    log(f"Check: address ends with @gmail.com = {sender.lower().endswith('@gmail.com')}, "
+        f"address is plain text = {sender.isascii()}, "
+        f"app password length = {len(password)} (must be 16), "
+        f"app password is letters only = {password.isascii() and password.isalpha()}")
     log("Unsent email:", subject, "\n", body)
     return False
 
