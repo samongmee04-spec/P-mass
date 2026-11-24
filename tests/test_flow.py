@@ -106,4 +106,5 @@ def test_send_email_never_raises(monkeypatch):
 
     monkeypatch.setattr(pmass.smtplib, "SMTP_SSL", boom)
     monkeypatch.setattr(pmass.smtplib, "SMTP", boom)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     assert pmass.send_email("s", "b") is False

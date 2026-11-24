@@ -63,8 +63,36 @@ def save_state(state: dict) -> None:
 
 # ----------------------------------------------------------------------------- email
 
+def github_notify(subject: str, body: str) -> bool:
+    """Backup notification: open a GitHub issue. GitHub emails the repo owner about it."""
+    token, repo = os.environ.get("GITHUB_TOKEN"), os.environ.get("GITHUB_REPOSITORY")
+    if not (token and repo):
+        return False
+    try:
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{repo}/issues",
+            data=json.dumps({"title": subject, "body": body}).encode("utf-8"),
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+                     "User-Agent": "p-mass"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as r:
+            url = json.loads(r.read()).get("html_url")
+        log("Notification posted as GitHub issue:", url)
+        return True
+    except Exception as e:  # noqa: BLE001
+        log("GitHub issue notification failed:", e)
+        return False
+
+
 def send_email(subject: str, body: str) -> bool:
-    """Send a notification. Never raises: a mail problem must not undo an upload."""
+    """Notify by Gmail; if that fails, by GitHub issue. Never raises."""
+    if _send_gmail(subject, body):
+        return True
+    return github_notify(subject, body)
+
+
+def _send_gmail(subject: str, body: str) -> bool:
     sender = re.sub(r"\s", "", os.environ.get("GMAIL_ADDRESS", ""))
     password = re.sub(r"\s", "", os.environ.get("GMAIL_APP_PASSWORD", ""))  # app passwords are shown with spaces
     to = re.sub(r"\s", "", os.environ.get("NOTIFY_TO", "")) or sender

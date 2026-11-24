@@ -21,6 +21,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: pmass
@@ -55,6 +56,7 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           NOTIFY_TO: ${{ secrets.NOTIFY_TO }}
           FB_COOKIES: ${{ secrets.FB_COOKIES }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           args=()
           if [ -n "$FB_URL" ]; then args+=(--url "$FB_URL"); fi
