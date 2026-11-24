@@ -8,6 +8,7 @@ on:
     - cron: "*/15 11-14 * * 1-6"  # Mon-Sat 18:00-21:45
     - cron: "30,45 2 * * 0"       # Sun 09:30-09:45 (Mass 9.00-11.00)
     - cron: "*/15 3-5 * * 0"      # Sun 10:00-12:45
+    - cron: "5 * * * *"            # every hour, all day: picks up links e-mailed to Gmail
   workflow_dispatch:
     inputs:
       fb_url:
