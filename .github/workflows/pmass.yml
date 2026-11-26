@@ -18,6 +18,10 @@ on:
         description: "ทดสอบเท่านั้น (ไม่อัปโหลด ส่งอีเมลตัวอย่างชื่อคลิป)"
         type: boolean
         default: false
+      watch_minutes:
+        description: "เฝ้ากล่องเมลกี่นาทีก่อนเริ่มรอบใหม่ (ปกติ 300)"
+        required: false
+        default: "300"
 
 permissions:
   contents: write
@@ -83,8 +87,10 @@ jobs:
 
       - name: Watch mailbox every 5 minutes (about 5 hours)
         if: env.ONE_OFF != 'true'
+        env:
+          WATCH_MINUTES: ${{ inputs.watch_minutes || '300' }}
         run: |
-          end=$((SECONDS + 300 * 60))
+          end=$((SECONDS + ${WATCH_MINUTES:-300} * 60))
           while :; do
             python pmass.py || echo "This check failed; trying again in 5 minutes"
             bash /tmp/save.sh || echo "Could not save progress this time"
