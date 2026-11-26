@@ -19,9 +19,14 @@
    "attempts": 0,
    "status": "new"
   },
-  "https://www.facebook.com/share/v/1f59D1978R/": {
+  "https://www.facebook.com/share/v/1Q9J8Goia1/": {
    "attempts": 1,
-   "last_error": "ERROR: Unsupported URL: https://www.facebook.com/login/?next=https%3A%2F%2Fwww.facebook.com%2Fstory.php%3Fstory_fbid%3D2350792388791818%26id%3D100003864790229%26rdid%3D6m9JOEvCQKIUJzIC%26share_url%3Dhttps%253A%252F%252Fwww.facebook.com%252Fshare%252Fv%252F1f59D1978R%252F&rdid=6m9JOEvCQKIUJzIC&_fb_no",
+   "last_error": "ERROR: Unsupported URL: https://www.facebook.com/login/?next=https%3A%2F%2Fwww.facebook.com%2Fstory.php%3Fstory_fbid%3D2350792388791818%26id%3D100003864790229%26rdid%3DDjg2czI1QpwIOJKF%26share_url%3Dhttps%253A%252F%252Fwww.facebook.com%252Fshare%252Fv%252F1Q9J8Goia1%252F&rdid=Djg2czI1QpwIOJKF&_fb_no",
+   "status": "error"
+  },
+  "https://www.facebook.com/share/v/1f59D1978R/": {
+   "attempts": 2,
+   "last_error": "ERROR: Unsupported URL: https://www.facebook.com/login/?next=https%3A%2F%2Fwww.facebook.com%2Fstory.php%3Fstory_fbid%3D2350792388791818%26id%3D100003864790229%26rdid%3Dwkn13T1jiJNiMetS%26share_url%3Dhttps%253A%252F%252Fwww.facebook.com%252Fshare%252Fv%252F1f59D1978R%252F&rdid=wkn13T1jiJNiMetS&_fb_no",
    "status": "error"
   }
  }
