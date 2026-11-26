@@ -108,3 +108,36 @@ def test_send_email_never_raises(monkeypatch):
     monkeypatch.setattr(pmass.smtplib, "SMTP", boom)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     assert pmass.send_email("s", "b") is False
+
+
+LOGIN = ("https://www.facebook.com/login/?next=https%3A%2F%2Fwww.facebook.com%2Fstory.php%3Fstory_fbid%3D2350792388791818"
+         "%26id%3D100003864790229%26rdid%3DDjg2czI1QpwIOJKF&rdid=Djg2czI1QpwIOJKF&_fb_noscript=1")
+
+
+def test_login_wall_is_unwrapped_to_the_post():
+    urls = pmass.related_urls(LOGIN)
+    assert "https://www.facebook.com/100003864790229/posts/2350792388791818/" in urls
+    assert all("/login" not in u for u in urls)
+    assert pmass.related_urls("https://www.facebook.com/x/videos/1234567890/") == ["https://www.facebook.com/watch/?v=1234567890"]
+
+
+def test_get_info_retries_with_post_address(monkeypatch):
+    import yt_dlp
+    seen = []
+
+    class FakeYDL:
+        def __init__(self, opts): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+        def extract_info(self, url, download=False):
+            seen.append(url)
+            if "share/v" in url:
+                raise yt_dlp.utils.DownloadError(f"ERROR: Unsupported URL: {LOGIN}")
+            return {"id": "987654321", "duration": 10}
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", FakeYDL)
+    monkeypatch.setattr(pmass, "resolve_share", lambda u, c: [])
+    info = pmass.get_info("https://www.facebook.com/share/v/1Q9J8Goia1/", None)
+    assert info["_source_url"] == "https://www.facebook.com/100003864790229/posts/2350792388791818/"
+    assert len(seen) == 2

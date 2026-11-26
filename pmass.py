@@ -33,6 +33,7 @@ from email.message import EmailMessage
 from email.utils import parseaddr
 from http.cookiejar import MozillaCookieJar
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from title_rules import make_title
 
@@ -273,10 +274,101 @@ def ydl_opts(cookies: str | None, **extra) -> dict:
     return opts
 
 
+LOGIN_URL_RE = re.compile(r"https?://(?:[\w-]+\.)?facebook\.com/login(?:\.php)?/?\?[^\s'\"]+", re.I)
+
+
+def unwrap_login(url: str) -> str:
+    """facebook.com/login/?next=<real page> -> <real page>. Other links are returned unchanged."""
+    p = urlparse(url)
+    if "facebook.com" in p.netloc and p.path.rstrip("/") in ("/login", "/login.php"):
+        nxt = parse_qs(p.query).get("next", [""])[0]
+        if nxt.startswith("http"):
+            return nxt
+    return url
+
+
+def related_urls(url: str) -> list[str]:
+    """Other addresses of the same Facebook video/post that yt-dlp's Facebook extractor understands.
+
+    A share link (facebook.com/share/v/...) sometimes lands on the login page, with the real post
+    (story.php?story_fbid=...&id=...) in its "next" parameter. yt-dlp cannot read the login page,
+    but it can often read the post itself.
+    """
+    url = unwrap_login(url)
+    out: list[str] = []
+    q = parse_qs(urlparse(url).query)
+    vid = (q.get("v") or q.get("video_id") or [""])[0]
+    m = re.search(r"/(?:videos|reel)/(?:[^/?#]+/)?(\d{9,20})", url)
+    vid = vid or (m.group(1) if m else "")
+    if vid:
+        out.append(f"https://www.facebook.com/watch/?v={vid}")
+    fbid, owner = (q.get("story_fbid") or [""])[0], (q.get("id") or [""])[0]
+    if fbid and owner:
+        out += [f"https://www.facebook.com/{owner}/posts/{fbid}/",
+                f"https://www.facebook.com/story.php?story_fbid={fbid}&id={owner}",
+                f"https://m.facebook.com/story.php?story_fbid={fbid}&id={owner}"]
+    if not out and "/login" not in urlparse(url).path:
+        out.append(url)
+    return out
+
+
+def resolve_share(url: str, cookies: str | None) -> list[str]:
+    """Follow a share / fb.watch short link ourselves and return the addresses it points to."""
+    if not re.search(r"facebook\.com/share/|fb\.watch/", url):
+        return []
+    try:
+        handlers = []
+        if cookies:
+            jar = MozillaCookieJar(cookies)
+            jar.load(ignore_discard=True, ignore_expires=True)
+            handlers.append(urllib.request.HTTPCookieProcessor(jar))
+        req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "th-TH,th;q=0.9,en;q=0.8"})
+        with urllib.request.build_opener(*handlers).open(req, timeout=40) as r:
+            final = r.geturl()
+    except Exception as e:  # noqa: BLE001
+        final = getattr(e, "url", None) or (e.geturl() if hasattr(e, "geturl") else "")
+        if not final:
+            log("Could not follow share link", url, "-", e)
+            return []
+    log("Share link leads to:", final)
+    return related_urls(final)
+
+
 def get_info(url: str, cookies: str | None) -> dict:
+    """Read video details with yt-dlp, trying other addresses of the same post if the link fails.
+
+    The address that worked is stored in info["_source_url"] so the download uses it too.
+    """
     import yt_dlp
-    with yt_dlp.YoutubeDL(ydl_opts(cookies)) as ydl:
-        return ydl.extract_info(url, download=False)
+    candidates = [url]
+    tried: list[str] = []
+    first_error: Exception | None = None
+    resolved = False
+    while candidates:
+        cand = candidates.pop(0)
+        if cand in tried:
+            continue
+        tried.append(cand)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts(cookies)) as ydl:
+                info = ydl.extract_info(cand, download=False)
+            if cand != url:
+                log("Read the video via", cand)
+            info["_source_url"] = cand
+            return info
+        except Exception as e:  # noqa: BLE001
+            log(f"Could not read {cand}: {str(e)[:300]}")
+            first_error = first_error or e
+            for login in LOGIN_URL_RE.findall(str(e)):
+                candidates += related_urls(login)
+            if not resolved:
+                resolved = True
+                candidates += resolve_share(url, cookies)
+    msg = str(first_error)
+    if LOGIN_URL_RE.search(msg) and not cookies:
+        msg += ("\n(Facebook ให้ล็อกอินก่อนจึงจะเปิดวิดีโอนี้ได้ ลองแล้วทุกทาง "
+                f"{len(tried)} ลิงก์ ถ้าเกิดบ่อย ให้ใส่ FB_COOKIES ใน GitHub Secrets ตาม README)")
+    raise RuntimeError(msg) from first_error
 
 
 def download(url: str, cookies: str | None, folder: Path) -> Path:
@@ -402,7 +494,7 @@ def process(vid: str, url: str, state: dict, cookies: str | None, manual: bool, 
 
     work = Path(tempfile.mkdtemp(prefix="pmass-"))  # outside the repository
     try:
-        file = download(url, cookies, work)
+        file = download(info.get("_source_url") or url, cookies, work)
         size_mb = file.stat().st_size // (1024 * 1024)
         log(f"Downloaded {file.name} ({size_mb} MB)")
         yt_id = upload(yt, file, t.title, t.description, started)
@@ -483,7 +575,7 @@ def main() -> int:
             rec["status"] = "error" if rec["attempts"] < MAX_ATTEMPTS else "failed"
             rec["last_error"] = str(e)[:300]
             if manual or rec["attempts"] == 1 or rec["status"] == "failed":
-                final = rec["status"] == "failed" or manual
+                final = rec["status"] == "failed" or bool(args.url)
                 send_email(
                     f"[P mass] ❌ {'ลงคลิปไม่สำเร็จ' if final else 'มีปัญหา กำลังลองใหม่'}",
                     f"วิดีโอ: {url}\nปัญหา: {e}\n\n"
