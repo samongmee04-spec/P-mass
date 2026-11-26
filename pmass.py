@@ -44,7 +44,7 @@ STATE_FILE = ROOT / "state" / "processed.json"
 FB_PROFILE = os.environ.get("FB_PROFILE", "https://www.facebook.com/pongthep.pramualpromp.7").rstrip("/")
 YT_PRIVACY = os.environ.get("YT_PRIVACY", "private")  # private | unlisted | public
 MAX_AGE_DAYS = 2        # never upload Facebook videos older than this automatically
-MAX_ATTEMPTS = 4        # give up on one video after this many failed runs
+MAX_ATTEMPTS = 12       # give up on one video after this many failed checks (checks run every 5 minutes)
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
