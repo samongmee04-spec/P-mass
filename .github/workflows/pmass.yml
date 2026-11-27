@@ -2,36 +2,56 @@ name: P mass
 
 # Times are UTC. Thailand = UTC+7.
 on:
+  # The real work is the "watch" loop below: one run checks the mailbox (and Facebook) every
+  # 5 minutes for about 5 hours, then starts the next run itself, so it never stops.
+  # GitHub often skips or delays scheduled runs, so the schedule is only a backup starter
+  # in case the chain is ever broken.
   schedule:
-    - cron: "*/15 0-3 * * 1-6"    # Mon-Sat 07:00-10:45 (morning Mass 6.30-9.00)
-    - cron: "30,45 10 * * 1-6"    # Mon-Sat 17:30-17:45 (evening Mass 17.00-20.00)
-    - cron: "*/15 11-14 * * 1-6"  # Mon-Sat 18:00-21:45
-    - cron: "30,45 2 * * 0"       # Sun 09:30-09:45 (Mass 9.00-11.00)
-    - cron: "*/15 3-5 * * 0"      # Sun 10:00-12:45
-    - cron: "5 * * * *"            # every hour, all day: picks up links e-mailed to Gmail
+    - cron: "7,37 * * * *"
   workflow_dispatch:
     inputs:
       fb_url:
-        description: "ลิงก์ไลฟ์ Facebook (เว้นว่าง = ตรวจหน้าคุณพ่อตามปกติ)"
+        description: "ลิงก์ไลฟ์ Facebook (เว้นว่าง = เริ่มเฝ้ากล่องเมลตามปกติ)"
         required: false
         default: ""
       dry_run:
         description: "ทดสอบเท่านั้น (ไม่อัปโหลด ส่งอีเมลตัวอย่างชื่อคลิป)"
         type: boolean
         default: false
+      watch_minutes:
+        description: "เฝ้ากล่องเมลกี่นาทีก่อนเริ่มรอบใหม่ (ปกติ 300)"
+        required: false
+        default: "300"
 
 permissions:
   contents: write
   issues: write
+  actions: write
 
+# Only one watcher at a time. A one-off link / test run uses its own group so it starts right away.
 concurrency:
-  group: pmass
+  group: pmass-${{ (inputs.fb_url != '' || inputs.dry_run) && 'once' || 'watch' }}
   cancel-in-progress: false
+
+env:
+  ONE_OFF: ${{ (inputs.fb_url != '' || inputs.dry_run) && 'true' || 'false' }}
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 355
+    env:
+      FB_URL: ${{ inputs.fb_url }}
+      DRY_RUN: ${{ inputs.dry_run }}
+      YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+      YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+      YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+      YT_PRIVACY: ${{ vars.YT_PRIVACY || 'private' }}
+      GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+      NOTIFY_TO: ${{ secrets.NOTIFY_TO }}
+      FB_COOKIES: ${{ secrets.FB_COOKIES }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v5
 
@@ -44,33 +64,47 @@ jobs:
         run: |
           pip install -U -r requirements.txt
           command -v ffmpeg || (sudo apt-get update -q && sudo apt-get install -y -q ffmpeg)
+          git config user.name "p-mass-bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Only the small list of handled videos is saved. Videos are never committed.
+          cat > /tmp/save.sh <<'SH'
+          git add state/processed.json
+          git diff --cached --quiet && exit 0
+          git commit -q -m "Update processed videos"
+          for i in 1 2 3; do
+            git pull -q --rebase -X theirs && git push -q && exit 0
+            git rebase --abort 2>/dev/null; sleep 5
+          done
+          SH
 
-      - name: Run P mass
-        env:
-          FB_URL: ${{ inputs.fb_url }}
-          DRY_RUN: ${{ inputs.dry_run }}
-          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
-          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
-          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
-          YT_PRIVACY: ${{ vars.YT_PRIVACY || 'private' }}
-          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          NOTIFY_TO: ${{ secrets.NOTIFY_TO }}
-          FB_COOKIES: ${{ secrets.FB_COOKIES }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run once (link or test)
+        if: env.ONE_OFF == 'true'
         run: |
           args=()
           if [ -n "$FB_URL" ]; then args+=(--url "$FB_URL"); fi
           if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
           python pmass.py "${args[@]}"
 
-      # Only the small list of handled videos is saved. Videos are never committed.
+      - name: Watch mailbox every 5 minutes (about 5 hours)
+        if: env.ONE_OFF != 'true'
+        env:
+          WATCH_MINUTES: ${{ inputs.watch_minutes || '300' }}
+        run: |
+          end=$((SECONDS + ${WATCH_MINUTES:-300} * 60))
+          while :; do
+            python pmass.py || echo "This check failed; trying again in 5 minutes"
+            bash /tmp/save.sh || echo "Could not save progress this time"
+            [ "$SECONDS" -ge "$end" ] && break
+            sleep 300
+            git pull -q --rebase -X theirs || git rebase --abort 2>/dev/null || true
+          done
+
       - name: Save progress
         if: always()
-        run: |
-          git config user.name "p-mass-bot"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add state/processed.json
-          git diff --cached --quiet && exit 0
-          git commit -q -m "Update processed videos"
-          for i in 1 2 3; do git pull -q --rebase && git push -q && break; sleep 5; done
+        run: bash /tmp/save.sh
+
+      - name: Start the next watch run
+        if: ${{ !cancelled() && env.ONE_OFF != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pmass.yml --ref "${{ github.ref_name }}"
